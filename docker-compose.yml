@@ -1,0 +1,16 @@
+services:
+  365-mcp:
+    build: .
+    container_name: 365-mcp
+    ports:
+      - "3000:3000"
+    environment:
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - MCP_PORT=3000
+    volumes:
+      - token-cache:/data/token-cache
+    restart: unless-stopped
+
+volumes:
+  token-cache:
