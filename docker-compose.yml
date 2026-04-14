@@ -7,10 +7,6 @@ services:
     environment:
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - MCP_PORT=3000
-    volumes:
-      - token-cache:/data/token-cache
     restart: unless-stopped
-
-volumes:
-  token-cache:

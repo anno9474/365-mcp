@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -5,7 +6,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import cors from "cors";
 import express from "express";
 import type { Request, Response } from "express";
-import { getGraphClient, testConnection } from "./auth/graph-client.js";
+import { buildGraphClient } from "./auth/graph-client.js";
 import { registerMailTools } from "./tools/mail.js";
 import { registerCalendarTools } from "./tools/calendar.js";
 
@@ -22,17 +23,25 @@ app.use(
   })
 );
 
-function getServer(): McpServer {
+function getServer(userAccessToken: string): McpServer {
   const server = new McpServer({
     name: "365-mcp",
     version: "0.1.0",
   });
 
-  const graphClient = getGraphClient();
+  const graphClient = buildGraphClient(userAccessToken);
   registerMailTools(server, graphClient);
   registerCalendarTools(server, graphClient);
 
   return server;
+}
+
+function extractBearerToken(req: Request): string | null {
+  const auth = req.headers["authorization"];
+  if (typeof auth === "string" && auth.startsWith("Bearer ")) {
+    return auth.slice(7);
+  }
+  return null;
 }
 
 const transports = new Map<string, StreamableHTTPServerTransport>();
@@ -52,6 +61,12 @@ app.post("/mcp", async (req: Request, res: Response) => {
     if (sessionId && transports.has(sessionId)) {
       transport = transports.get(sessionId)!;
     } else if (!sessionId && isInitializeRequest(req.body)) {
+      const userToken = extractBearerToken(req);
+      if (!userToken) {
+        res.status(401).json({ error: "Missing Authorization: Bearer token" });
+        return;
+      }
+
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
@@ -64,7 +79,7 @@ app.post("/mcp", async (req: Request, res: Response) => {
         if (sid) transports.delete(sid);
       };
 
-      const server = getServer();
+      const server = getServer(userToken);
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
       return;
@@ -114,16 +129,6 @@ app.delete("/mcp", async (req: Request, res: Response) => {
 
 async function main() {
   console.log("365-MCP Server starting...");
-
-  try {
-    await testConnection();
-    console.log("Graph API connection verified.");
-  } catch (error) {
-    console.error("Graph API connection failed:", error);
-    console.error(
-      "The server will start, but tools will fail until auth is completed."
-    );
-  }
 
   app.listen(PORT, () => {
     console.log(`365-MCP Server listening on port ${PORT}`);

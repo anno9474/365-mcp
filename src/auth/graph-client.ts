@@ -1,56 +1,68 @@
-import { DeviceCodeCredential } from "@azure/identity";
-import { useIdentityPlugin } from "@azure/identity";
-import { cachePersistencePlugin } from "@azure/identity-cache-persistence";
+import { ConfidentialClientApplication, type Configuration } from "@azure/msal-node";
 import { Client } from "@microsoft/microsoft-graph-client";
-import { TokenCredentialAuthenticationProvider } from "@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials/index.js";
 
-// Enable persistent token cache so device code auth survives container restarts
-useIdentityPlugin(cachePersistencePlugin);
+const SCOPES = [
+  "https://graph.microsoft.com/Mail.Read",
+  "https://graph.microsoft.com/Calendars.Read",
+];
 
-let graphClient: Client | null = null;
+let msalApp: ConfidentialClientApplication | null = null;
 
-function createGraphClient(): Client {
+function getMsalApp(): ConfidentialClientApplication {
+  if (msalApp) return msalApp;
+
   const clientId = process.env.AZURE_CLIENT_ID;
+  const clientSecret = process.env.AZURE_CLIENT_SECRET;
   const tenantId = process.env.AZURE_TENANT_ID;
 
-  if (!clientId || !tenantId) {
+  if (!clientId || !clientSecret || !tenantId) {
     throw new Error(
-      "Missing required environment variables: AZURE_CLIENT_ID and AZURE_TENANT_ID must be set."
+      "Missing required environment variables: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, and AZURE_TENANT_ID must be set."
     );
   }
 
-  const credential = new DeviceCodeCredential({
-    clientId,
-    tenantId,
-    userPromptCallback: (info) => {
-      console.log("========================================");
-      console.log("DEVICE CODE AUTHENTICATION REQUIRED");
-      console.log("========================================");
-      console.log(info.message);
-      console.log("========================================");
+  const config: Configuration = {
+    auth: {
+      clientId,
+      clientSecret,
+      authority: `https://login.microsoftonline.com/${tenantId}`,
     },
-    tokenCachePersistenceOptions: {
-      enabled: true,
-      name: "365-mcp-token-cache",
-    },
-  });
+  };
 
-  const authProvider = new TokenCredentialAuthenticationProvider(credential, {
-    scopes: ["https://graph.microsoft.com/.default"],
-  });
-
-  return Client.initWithMiddleware({ authProvider });
+  msalApp = new ConfidentialClientApplication(config);
+  return msalApp;
 }
 
-export function getGraphClient(): Client {
-  if (!graphClient) {
-    graphClient = createGraphClient();
-  }
-  return graphClient;
-}
+/**
+ * Builds a Graph API client that exchanges the caller's Azure AD access token
+ * for a Graph-scoped token via the On-Behalf-Of flow.
+ *
+ * Prerequisites in Azure AD:
+ * - App must be a confidential client (client secret set)
+ * - App must Expose an API with a delegated scope (e.g. access_as_user)
+ * - LibreChat OIDC must request that scope so the forwarded token has the
+ *   correct audience for OBO assertion
+ */
+export function buildGraphClient(userAccessToken: string): Client {
+  const app = getMsalApp();
 
-export async function testConnection(): Promise<void> {
-  const client = getGraphClient();
-  const me = await client.api("/me").get();
-  console.log(`Authenticated as: ${me.displayName} (${me.userPrincipalName})`);
+  return Client.init({
+    authProvider: async (done) => {
+      try {
+        const result = await app.acquireTokenOnBehalfOf({
+          oboAssertion: userAccessToken,
+          scopes: SCOPES,
+        });
+
+        if (!result?.accessToken) {
+          done(new Error("OBO token exchange returned no access token"), null);
+          return;
+        }
+
+        done(null, result.accessToken);
+      } catch (error) {
+        done(error as Error, null);
+      }
+    },
+  });
 }
